@@ -22,12 +22,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Make scripts executable
+        run: chmod +x server-security-audit.sh test/smoke.sh
       - name: Self test
-        run: ./test/smoke.sh
+        run: bash test/smoke.sh
       - name: JSON report is valid
         run: |
           set +e
-          sudo ./server-security-audit.sh --format json --color never > audit.json
+          sudo bash server-security-audit.sh --format json --color never > audit.json
           code=$?
           set -e
           echo "exit code: $code"
@@ -35,4 +37,4 @@ jobs:
           jq -e '.tool == "server-security-audit" and (.findings | type == "array")' audit.json > /dev/null
           jq -r '.counts' audit.json
       - name: Text report
-        run: sudo ./server-security-audit.sh --color never --no-pass | tail -30
+        run: sudo bash server-security-audit.sh --color never --no-pass | tail -30
