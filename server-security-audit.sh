@@ -11,7 +11,7 @@
 set -uo pipefail
 IFS=$' \t\n'
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 PROG="${0##*/}"
 
 # -----------------------------------------------------------------------------
@@ -1268,7 +1268,9 @@ check_logs() {
 
   local f2b_on=0 pass_off=0 mitigated=""
   if have systemctl && systemctl is-active --quiet fail2ban 2>/dev/null; then f2b_on=1; mitigated="${mitigated}fail2ban active, "; fi
-  if sshd -T 2>/dev/null | grep -qiE '^passwordauthentication no'; then pass_off=1; mitigated="${mitigated}password authentication disabled"; fi
+  local sshd_eff
+  sshd_eff=$(sshd -T 2>/dev/null || true)
+  if printf '%s\n' "$sshd_eff" | grep -qiE '^passwordauthentication no'; then pass_off=1; mitigated="${mitigated}password authentication disabled"; fi
   if [ "${failed:-0}" -gt 500 ]; then
     if [ "$f2b_on" -eq 1 ] && [ "$pass_off" -eq 1 ]; then
       report info LOG-01 medium "Historical brute force attempts in the last 24h" "source: $src
