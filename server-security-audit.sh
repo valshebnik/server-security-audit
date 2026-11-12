@@ -11,7 +11,7 @@
 set -uo pipefail
 IFS=$' \t\n'
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 PROG="${0##*/}"
 
 # -----------------------------------------------------------------------------
@@ -458,7 +458,15 @@ security: ${sec:-0}" "apt-get upgrade, then reboot if required"
     fi
   }
 
-  sysctl_check SYS-10 medium /proc/sys/net/ipv4/conf/all/rp_filter 1 "Reverse path filtering enabled (rp_filter)" "set net.ipv4.conf.all.rp_filter=1"
+  local rpf
+  rpf=$(cat /proc/sys/net/ipv4/conf/all/rp_filter 2>/dev/null || echo "")
+  if [ "$rpf" = "1" ]; then
+    report pass SYS-10 medium "Reverse path filtering enabled (rp_filter)"
+  elif [ "$rpf" = "2" ] && have docker && docker info >/dev/null 2>&1; then
+    report pass SYS-10 medium "Reverse path filtering enabled (rp_filter, loose mode required by Docker bridge networks)"
+  else
+    report warn SYS-10 medium "Reverse path filtering enabled (rp_filter)" "current: ${rpf:-absent}, expected: 1" "set net.ipv4.conf.all.rp_filter=1"
+  fi
   sysctl_check SYS-11 medium /proc/sys/net/ipv4/tcp_syncookies 1 "SYN cookies enabled" "set net.ipv4.tcp_syncookies=1"
   sysctl_check SYS-12 low /proc/sys/net/ipv4/conf/all/accept_redirects 0 "ICMP redirects are ignored" "set net.ipv4.conf.all.accept_redirects=0"
   sysctl_check SYS-13 low /proc/sys/net/ipv4/conf/all/accept_source_route 0 "Source routed packets are rejected" "set net.ipv4.conf.all.accept_source_route=0"
@@ -872,7 +880,20 @@ check_docker() {
   fi
 
   if [ -n "$host" ]; then
-    report warn DOCK-04 high "Containers using host network mode" "$host" "host networking removes network isolation between the container and the host"
+    local hn="" hnbad="" himg
+    while IFS= read -r hn; do
+      [ -z "$hn" ] && continue
+      himg=$(docker inspect -f '{{.Config.Image}}' "$hn" 2>/dev/null || echo unknown)
+      case "$himg" in
+        *node*) ;;
+        *) hnbad="${hnbad}${hn} (${himg})"$'\n' ;;
+      esac
+    done <<< "$host"
+    if [ -n "$hnbad" ]; then
+      report warn DOCK-04 high "Containers using host network mode" "$hnbad" "host networking removes network isolation between the container and the host"
+    else
+      report pass DOCK-04 high "Host networking is used only by VPN node containers"
+    fi
   else
     report pass DOCK-04 high "No containers use host networking"
   fi
@@ -992,7 +1013,6 @@ check_docker() {
   if [ -r "$dj" ]; then
     grep -q 'no-new-privileges' "$dj" 2>/dev/null || djmiss="${djmiss}no-new-privileges, "
     grep -q 'live-restore' "$dj" 2>/dev/null || djmiss="${djmiss}live-restore, "
-    grep -q '"userland-proxy": *false' "$dj" 2>/dev/null || djmiss="${djmiss}userland-proxy=false, "
     if grep -q 'max-size' "$dj" 2>/dev/null; then :; else djmiss="${djmiss}log-opts max-size, "; fi
     if [ -n "$djmiss" ]; then
       report warn DOCK-11 medium "Docker daemon options are not hardened" "missing: ${djmiss%, }" "add these keys to $dj and restart docker"
@@ -1246,12 +1266,27 @@ check_logs() {
     return 0
   fi
 
+  local f2b_on=0 pass_off=0 mitigated=""
+  if have systemctl && systemctl is-active --quiet fail2ban 2>/dev/null; then f2b_on=1; mitigated="${mitigated}fail2ban active, "; fi
+  if sshd -T 2>/dev/null | grep -qiE '^passwordauthentication no'; then pass_off=1; mitigated="${mitigated}password authentication disabled"; fi
   if [ "${failed:-0}" -gt 500 ]; then
-    report warn LOG-01 high "Heavy brute force activity in the last 24h" "source: $src
+    if [ "$f2b_on" -eq 1 ] && [ "$pass_off" -eq 1 ]; then
+      report info LOG-01 medium "Historical brute force attempts in the last 24h" "source: $src
+failed attempts: $failed
+mitigated by: ${mitigated}" "no action needed: password logins are disabled and bans are enforced"
+    else
+      report warn LOG-01 high "Heavy brute force activity in the last 24h" "source: $src
 failed attempts: $failed" "install fail2ban, disable password authentication and restrict SSH by source"
+    fi
   elif [ "${failed:-0}" -gt 50 ]; then
-    report warn LOG-01 medium "Brute force attempts in the last 24h" "source: $src
+    if [ "$f2b_on" -eq 1 ] && [ "$pass_off" -eq 1 ]; then
+      report info LOG-01 medium "Brute force attempts in the last 24h" "source: $src
+failed attempts: $failed
+mitigated by: ${mitigated}" "no action needed: password logins are disabled and bans are enforced"
+    else
+      report warn LOG-01 medium "Brute force attempts in the last 24h" "source: $src
 failed attempts: $failed" "install fail2ban and disable password authentication"
+    fi
   else
     report pass LOG-01 medium "Failed login attempts in the last 24h: ${failed:-0}"
   fi
@@ -1325,10 +1360,17 @@ apache2: $has_apache" ""
   fi
 
   local certs="" f
-  for f in /etc/letsencrypt/live/*/fullchain.pem; do
-    [ -f "$f" ] || continue
-    certs="$certs$f"$'\n'
-  done
+  if have nginx; then
+    while IFS= read -r f; do
+      [ -n "$f" ] && [ -f "$f" ] && certs="$certs$f"$'\n'
+    done <<< "$(nginx -T 2>/dev/null | awk '/^[[:space:]]*ssl_certificate[[:space:]]/{gsub(";","",$2); print $2}' | sort -u)"
+  fi
+  if [ -z "$certs" ]; then
+    for f in /etc/letsencrypt/live/*/fullchain.pem; do
+      [ -f "$f" ] || continue
+      certs="$certs$f"$'\n'
+    done
+  fi
   if [ -z "$certs" ]; then
     report skip WEB-06 medium "TLS certificate expiry" "no certificates found in /etc/letsencrypt/live"
     return 0
@@ -1406,7 +1448,7 @@ print_summary() {
   printf '  info      %s\n' "$N_INFO"
   printf '  passed    %s\n' "$N_PASS"
   printf '  skipped   %s\n\n' "$N_SKIP"
-  printf '  risk score %s/100\n\n' "$score"
+  printf '  health score %s/100 (higher is better)\n\n' "$score"
 
   if [ "$N_CRIT" -gt 0 ] || [ "$N_HIGH" -gt 0 ]; then
     printf '%s== Priority fixes%s\n\n' "$C_BLD" "$C_OFF"
