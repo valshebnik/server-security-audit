@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check
+        run: bash -n server-security-audit.sh
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+          shellcheck --severity=warning server-security-audit.sh
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Self test
+        run: ./test/smoke.sh
+      - name: JSON report is valid
+        run: |
+          set +e
+          sudo ./server-security-audit.sh --format json --color never > audit.json
+          code=$?
+          set -e
+          echo "exit code: $code"
+          test "$code" -le 2
+          jq -e '.tool == "server-security-audit" and (.findings | type == "array")' audit.json > /dev/null
+          jq -r '.counts' audit.json
+      - name: Text report
+        run: sudo ./server-security-audit.sh --color never --no-pass | tail -30
