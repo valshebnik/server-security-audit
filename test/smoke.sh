@@ -9,21 +9,21 @@ bad()  { printf 'FAIL - %s\n' "$1"; fails=$((fails+1)); }
 
 bash -n server-security-audit.sh && ok "syntax" || bad "syntax"
 
-./server-security-audit.sh --help >/dev/null 2>&1 && ok "--help exits 0" || bad "--help"
-./server-security-audit.sh --version | grep -qE '^server-security-audit [0-9]' && ok "--version" || bad "--version"
+bash server-security-audit.sh --help >/dev/null 2>&1 && ok "--help exits 0" || bad "--help"
+bash server-security-audit.sh --version | grep -qE '^server-security-audit [0-9]' && ok "--version" || bad "--version"
 
-out=$(./server-security-audit.sh --color never --only SYS-01 2>&1)
+out=$(bash server-security-audit.sh --color never --only SYS-01 2>&1)
 printf '%s' "$out" | grep -q 'SYS-01' && ok "filter --only" || bad "filter --only"
 printf '%s' "$out" | grep -q 'SSH-02' && bad "--only leaked other checks" || ok "--only isolation"
 
-out=$(./server-security-audit.sh --color never --skip SYS 2>&1)
+out=$(bash server-security-audit.sh --color never --skip SYS 2>&1)
 printf '%s' "$out" | grep -q 'SYS-01' && bad "--skip ignored" || ok "filter --skip"
 
-./server-security-audit.sh --color never --no-pass >/dev/null 2>&1
+bash server-security-audit.sh --color never --no-pass >/dev/null 2>&1
 code=$?
 [ "$code" -le 2 ] && ok "--no-pass exit code ($code)" || bad "--no-pass exit code ($code)"
 
-./server-security-audit.sh --format json --color never > /tmp/ssa-test.json 2>/dev/null
+bash server-security-audit.sh --format json --color never > /tmp/ssa-test.json 2>/dev/null
 if command -v jq >/dev/null 2>&1; then
   jq -e '.tool == "server-security-audit"' /tmp/ssa-test.json >/dev/null 2>&1 && ok "json tool field" || bad "json tool field"
   jq -e '.findings | type == "array"' /tmp/ssa-test.json >/dev/null 2>&1 && ok "json findings array" || bad "json findings array"
@@ -32,10 +32,10 @@ else
   printf 'skip - jq not installed\n'
 fi
 
-./server-security-audit.sh --format xml >/dev/null 2>&1
+bash server-security-audit.sh --format xml >/dev/null 2>&1
 [ "$?" -eq 64 ] && ok "bad argument exit code" || bad "bad argument exit code"
 
-./server-security-audit.sh --color never --min-severity critical --no-pass >/tmp/ssa-crit.txt 2>&1
+bash server-security-audit.sh --color never --min-severity critical --no-pass >/tmp/ssa-crit.txt 2>&1
 if grep -qE '\[(WARN|INFO|PASS)\]' /tmp/ssa-crit.txt; then
   bad "--min-severity filtering"
 else
